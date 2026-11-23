@@ -1,5 +1,9 @@
 from typing import List, Dict, Any, Optional
-from mcp.server.fastmcp import FastMCP
+import os
+try:
+    from fastmcp import FastMCP  # FastMCP 2.x, needed when served by the gateway
+except ImportError:
+    from mcp.server.fastmcp import FastMCP
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
     list_messages as whatsapp_list_messages,
@@ -17,6 +21,10 @@ from whatsapp import (
 
 # Initialize FastMCP server
 mcp = FastMCP("whatsapp")
+
+# Sending is off unless WHATSAPP_WRITE_MODE=true (same convention as simplenote).
+WRITE_MODE = os.environ.get("WHATSAPP_WRITE_MODE", "true" if __name__ == "__main__" else "false").lower() == "true"
+write_tool = mcp.tool() if WRITE_MODE else (lambda fn: fn)
 
 @mcp.tool()
 def search_contacts(query: str) -> List[Dict[str, Any]]:
@@ -154,7 +162,7 @@ def get_message_context(
     context = whatsapp_get_message_context(message_id, before, after)
     return context
 
-@mcp.tool()
+@write_tool
 def send_message(
     recipient: str,
     message: str
@@ -183,7 +191,7 @@ def send_message(
         "message": status_message
     }
 
-@mcp.tool()
+@write_tool
 def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
     """Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.
     
@@ -203,7 +211,7 @@ def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
         "message": status_message
     }
 
-@mcp.tool()
+@write_tool
 def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
     """Send any audio file as a WhatsApp audio message to the specified recipient. For group messages use the JID. If it errors due to ffmpeg not being installed, use send_file instead.
     
