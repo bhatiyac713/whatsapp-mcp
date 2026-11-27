@@ -774,13 +774,11 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
 # ---------------------------------------------------------------------------------------------
 
 
-# Largest file get_media will return inline. Bigger ones get metadata only.
-MEDIA_MAX_BYTES = int(os.environ.get("WHATSAPP_MEDIA_MAX_BYTES", str(5 * 1024 * 1024)))
+# Largest file get_media will return. This guards the server's memory (the file is held and
+# base64-encoded in RAM), not any client or model limit. Bigger files get metadata only.
+MEDIA_MAX_BYTES = int(os.environ.get("WHATSAPP_MEDIA_MAX_BYTES", str(25 * 1024 * 1024)))
 # Where the bridge writes media (it is the bridge's store directory).
 MEDIA_DIR = os.environ.get("WHATSAPP_STORE_DIR") or os.path.dirname(os.path.abspath(MESSAGES_DB_PATH))
-
-IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-TEXT_TYPES = {"application/json", "application/xml", "text/vcard", "text/x-vcard"}
 
 _MAGIC = [(b"\xff\xd8\xff", "image/jpeg"), (b"\x89PNG\r\n\x1a\n", "image/png"),
           (b"GIF8", "image/gif"), (b"%PDF-", "application/pdf")]
@@ -796,18 +794,8 @@ def _sniff(data: bytes, filename: str, media_type: str) -> str:
     guessed = mimetypes.guess_type(filename or "")[0]
     if guessed:
         return guessed
-    return {"audio": "audio/ogg", "video": "video/mp4"}.get(media_type, "application/octet-stream")
-
-
-def content_kind(mime: str) -> str:
-    """How get_media returns a file: 'image', 'pdf', 'text', or 'none' (metadata only)."""
-    if mime in IMAGE_TYPES:
-        return "image"
-    if mime == "application/pdf":
-        return "pdf"
-    if mime.startswith("text/") or mime in TEXT_TYPES:
-        return "text"
-    return "none"
+    return {"audio": "audio/ogg", "video": "video/mp4", "image": "image/jpeg"}.get(
+        media_type, "application/octet-stream")
 
 
 def get_media_info(message_id: str, chat_jid: str) -> Optional[dict]:
@@ -834,7 +822,7 @@ def fetch_media(message_id: str, chat_jid: str, max_bytes: Optional[int] = None)
     """Download a message's media and read it into memory, then delete the local copy.
 
     Returns {"ok": bool, "meta": {...}, "mime": str, "data": bytes | None, "error": str}.
-    "data" is None when the file is too big or is a type returned as metadata only.
+    "data" is None when the file is over the size limit.
     Nothing here logs the file name or the contents.
     """
     max_bytes = MEDIA_MAX_BYTES if max_bytes is None else max_bytes
@@ -862,7 +850,4 @@ def fetch_media(message_id: str, chat_jid: str, max_bytes: Optional[int] = None)
         with contextlib.suppress(OSError):
             os.remove(path)
     mime = _sniff(data, info["filename"], info["media_type"])
-    if content_kind(mime) == "none":
-        return {"ok": True, "meta": meta, "mime": mime, "data": None,
-                "error": f"{mime} can't be returned as content (metadata only)"}
     return {"ok": True, "meta": meta, "mime": mime, "data": data, "error": ""}

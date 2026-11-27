@@ -54,21 +54,19 @@ def test_image_returned_and_deleted(env):
     assert not os.path.exists(files["m1"][0])
 
 
-def test_pdf_and_text(env):
-    wa, add, _, _ = env
-    add("p", "document", "report.pdf", PDF)
-    add("t", "document", "notes.csv", b"a,b\n1,2\n")
-    assert wa.fetch_media("p", "c@s.whatsapp.net")["mime"] == "application/pdf"
-    r = wa.fetch_media("t", "c@s.whatsapp.net")
-    assert wa.content_kind(r["mime"]) == "text" and r["data"] == b"a,b\n1,2\n"
-
-
-def test_audio_is_metadata_only(env):
+def test_any_type_returned_as_is(env):
     wa, add, files, _ = env
-    add("a", "audio", "audio_1.ogg", b"OggS" + b"\0" * 20)
-    r = wa.fetch_media("a", "c@s.whatsapp.net")
-    assert r["ok"] and r["data"] is None and r["mime"] == "audio/ogg"
-    assert not os.path.exists(files["a"][0])
+    docx = b"PK\x03\x04" + b"\x01" * 40
+    cases = {"p": ("document", "report.pdf", PDF, "application/pdf"),
+             "d": ("document", "deck.docx", docx,
+                   "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+             "a": ("audio", "audio_1.ogg", b"OggS" + b"\0" * 20, "audio/ogg")}
+    for mid, (kind, name, data, _) in cases.items():
+        add(mid, kind, name, data)
+    for mid, (_, _, data, mime) in cases.items():
+        r = wa.fetch_media(mid, "c@s.whatsapp.net")
+        assert r["ok"] and r["data"] == data and r["mime"] == mime
+        assert not os.path.exists(files[mid][0])
 
 
 def test_size_cap_skips_download(env):
@@ -122,4 +120,7 @@ def test_tool_content_blocks(env):
     assert img.content[1].mimeType == "image/png"
     assert [b.type for b in pdf.content] == ["text", "resource"]
     assert pdf.content[1].resource.mimeType == "application/pdf"
-    assert [b.type for b in aud.content] == ["text"]
+    assert [b.type for b in aud.content] == ["text", "resource"]
+    assert aud.content[1].resource.mimeType == "audio/ogg"
+    import base64
+    assert base64.b64decode(aud.content[1].resource.blob) == b"OggS"

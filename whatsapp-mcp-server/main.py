@@ -18,12 +18,11 @@ from whatsapp import (
     send_audio_message as whatsapp_audio_voice_message,
     download_media as whatsapp_download_media,
     fetch_media as whatsapp_fetch_media,
-    content_kind as whatsapp_content_kind,
 )
 import base64
 from urllib.parse import quote
 import json
-from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent, TextResourceContents
+from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent
 
 # Initialize FastMCP server
 mcp = FastMCP("whatsapp")
@@ -265,11 +264,12 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
 
 @mcp.tool()
 def get_media(message_id: str, chat_jid: str):
-    """Get the contents of a media message (an attachment someone sent), so you can read it.
+    """Get the file attached to a media message (photo, document, voice note, video, ...).
 
-    Images come back as images, PDFs as embedded PDF documents, and text files (txt, csv, json,
-    vcf, ...) as text. Voice notes, audio, video and other files, and anything over the size
-    limit, come back as metadata only (type, file name, size).
+    Returns a JSON text block with the metadata (media type, file name, size, MIME type), then
+    the file itself: images as image content, everything else as an embedded resource with the
+    original bytes and MIME type. Files over WHATSAPP_MEDIA_MAX_BYTES (default 25 MiB) come back
+    as metadata only.
 
     Args:
         message_id: The ID of the message containing the media
@@ -285,17 +285,14 @@ def get_media(message_id: str, chat_jid: str):
     if not data:
         return blocks
     mime = result["mime"]
-    kind = whatsapp_content_kind(mime)
     name = result["meta"].get("filename") or "file"
     uri = "whatsapp://media/" + "/".join(quote(p, safe="") for p in (chat_jid, message_id, name))
-    if kind == "image":
-        blocks.append(ImageContent(type="image", data=base64.b64encode(data).decode(), mimeType=mime))
-    elif kind == "text":
-        blocks.append(EmbeddedResource(type="resource", resource=TextResourceContents(
-            uri=uri, mimeType=mime, text=data.decode("utf-8", errors="replace"))))
-    else:  # pdf
+    b64 = base64.b64encode(data).decode()
+    if mime.startswith("image/"):
+        blocks.append(ImageContent(type="image", data=b64, mimeType=mime))
+    else:
         blocks.append(EmbeddedResource(type="resource", resource=BlobResourceContents(
-            uri=uri, mimeType=mime, blob=base64.b64encode(data).decode())))
+            uri=uri, mimeType=mime, blob=b64)))
     return blocks
 
 if __name__ == "__main__":
