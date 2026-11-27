@@ -40,9 +40,9 @@ def env(tmp_path, monkeypatch):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as f:
             f.write(data)
-        return path
+        return path, ""
 
-    monkeypatch.setattr(whatsapp, "download_media", fake_download)
+    monkeypatch.setattr(whatsapp, "download_media_detail", fake_download)
     return whatsapp, add, files, tmp_path
 
 
@@ -92,6 +92,14 @@ def test_path_outside_store_refused(env, tmp_path_factory):
     r = wa.fetch_media("evil", "c@s.whatsapp.net")
     assert not r["ok"] and "outside" in r["error"]
     assert outside.exists()  # not read, not deleted
+
+
+def test_bridge_error_is_returned(env, monkeypatch):
+    wa, add, _, _ = env
+    add("x", "document", "a.md", b"hi")
+    monkeypatch.setattr(wa, "download_media_detail", lambda m, c: (None, "failed to download media: 403"))
+    r = wa.fetch_media("x", "c@s.whatsapp.net")
+    assert not r["ok"] and r["error"] == "failed to download media: 403"
 
 
 def test_not_media(env):

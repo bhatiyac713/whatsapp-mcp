@@ -21,3 +21,11 @@ func TestSafeNameStaysInDir(t *testing.T) {
 		t.Errorf("plain name changed: %q", got)
 	}
 }
+
+func TestExtractDirectPathKeepsSignature(t *testing.T) {
+	url := "https://mmg.whatsapp.net/v/t62.7119-24/123_456_n.enc?ccb=11-4&oh=01_abc&oe=6800AAAA&_nc_sid=5e03e0&mms3=true"
+	want := "/v/t62.7119-24/123_456_n.enc?ccb=11-4&oh=01_abc&oe=6800AAAA&_nc_sid=5e03e0"
+	if got := extractDirectPathFromURL(url); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

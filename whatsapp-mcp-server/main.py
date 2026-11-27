@@ -16,9 +16,10 @@ from whatsapp import (
     send_message as whatsapp_send_message,
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
-    download_media as whatsapp_download_media,
+    download_media_detail as whatsapp_download_media_detail,
     fetch_media as whatsapp_fetch_media,
 )
+import asyncio
 import base64
 from urllib.parse import quote
 import json
@@ -238,7 +239,7 @@ def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
     }
 
 @mcp.tool()
-def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
+async def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
     """Download media from a WhatsApp message and get the local file path.
     
     Args:
@@ -248,8 +249,9 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
     Returns:
         A dictionary containing success status, a status message, and the file path if successful
     """
-    file_path = whatsapp_download_media(message_id, chat_jid)
-    
+    # Off the event loop: a download can wait up to a minute for the phone to re-upload.
+    file_path, error = await asyncio.to_thread(whatsapp_download_media_detail, message_id, chat_jid)
+
     if file_path:
         return {
             "success": True,
@@ -259,11 +261,11 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
     else:
         return {
             "success": False,
-            "message": "Failed to download media"
+            "message": error or "Failed to download media"
         }
 
 @mcp.tool()
-def get_media(message_id: str, chat_jid: str):
+async def get_media(message_id: str, chat_jid: str):
     """Get the file attached to a media message (photo, document, voice note, video, ...).
 
     Returns a JSON text block with the metadata (media type, file name, size, MIME type), then
@@ -275,7 +277,7 @@ def get_media(message_id: str, chat_jid: str):
         message_id: The ID of the message containing the media
         chat_jid: The JID of the chat containing the message
     """
-    result = whatsapp_fetch_media(message_id, chat_jid)
+    result = await asyncio.to_thread(whatsapp_fetch_media, message_id, chat_jid)
     meta = {k: v for k, v in result.items() if k in ("ok", "error") and v != ""}
     meta.update(result.get("meta") or {})
     if result.get("mime"):
