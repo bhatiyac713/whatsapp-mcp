@@ -5,6 +5,7 @@ from typing import Optional, List, Tuple
 import os.path
 import requests
 import json
+import sys
 import contextlib
 import mimetypes
 import audio
@@ -727,46 +728,31 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
 
-def download_media(message_id: str, chat_jid: str) -> Optional[str]:
-    """Download media from a message and return the local file path.
-    
-    Args:
-        message_id: The ID of the message containing the media
-        chat_jid: The JID of the chat containing the message
-    
-    Returns:
-        The local file path if download was successful, None otherwise
+def download_media_detail(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
+    """Download media through the bridge. Returns (local path, "") or (None, the bridge's error).
+
+    Can take up to about a minute: when the media link has expired, the bridge asks the phone to
+    re-upload the file and waits for it.
     """
     try:
-        url = f"{WHATSAPP_API_BASE_URL}/download"
-        payload = {
-            "message_id": message_id,
-            "chat_jid": chat_jid
-        }
-        
-        response = requests.post(url, json=payload)
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("success", False):
-                path = result.get("path")
-                return path
-            else:
-                print(f"Download failed: {result.get('message', 'Unknown error')}")
-                return None
-        else:
-            print(f"Error: HTTP {response.status_code} - {response.text}")
-            return None
-            
+        response = requests.post(f"{WHATSAPP_API_BASE_URL}/download",
+                                 json={"message_id": message_id, "chat_jid": chat_jid}, timeout=120)
     except requests.RequestException as e:
-        print(f"Request error: {str(e)}")
-        return None
-    except json.JSONDecodeError:
-        print(f"Error parsing response: {response.text}")
-        return None
-    except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        return None
+        return None, f"bridge unreachable: {e}"
+    try:
+        result = response.json()
+    except ValueError:
+        result = {"message": response.text.strip()[:300]}
+    if response.status_code == 200 and result.get("success") and result.get("path"):
+        return result["path"], ""
+    error = result.get("message") or f"HTTP {response.status_code}"
+    print(f"whatsapp: media download failed: {error}", file=sys.stderr, flush=True)
+    return None, error
+
+
+def download_media(message_id: str, chat_jid: str) -> Optional[str]:
+    """Download media from a message and return the local file path, or None."""
+    return download_media_detail(message_id, chat_jid)[0]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -833,9 +819,9 @@ def fetch_media(message_id: str, chat_jid: str, max_bytes: Optional[int] = None)
     if info["size"] > max_bytes:  # known from the message, so skip the download
         return {"ok": True, "meta": meta, "mime": _sniff(b"", info["filename"], info["media_type"]),
                 "data": None, "error": f"File is larger than the {max_bytes}-byte limit"}
-    path = download_media(message_id, chat_jid)
+    path, error = download_media_detail(message_id, chat_jid)
     if not path:
-        return {"ok": False, "meta": meta, "error": "Download failed"}
+        return {"ok": False, "meta": meta, "error": error or "Download failed"}
     if not _inside(path, MEDIA_DIR):
         return {"ok": False, "meta": meta, "error": "Bridge returned a path outside the media directory"}
     try:
