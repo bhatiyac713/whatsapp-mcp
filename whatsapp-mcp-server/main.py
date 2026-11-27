@@ -16,8 +16,14 @@ from whatsapp import (
     send_message as whatsapp_send_message,
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
-    download_media as whatsapp_download_media
+    download_media as whatsapp_download_media,
+    fetch_media as whatsapp_fetch_media,
+    content_kind as whatsapp_content_kind,
 )
+import base64
+from urllib.parse import quote
+import json
+from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent, TextResourceContents
 
 # Initialize FastMCP server
 mcp = FastMCP("whatsapp")
@@ -62,6 +68,9 @@ def list_messages(
         include_context: Whether to include messages before and after matches (default True)
         context_before: Number of messages to include before each match (default 1)
         context_after: Number of messages to include after each match (default 1)
+
+    Media messages are shown as "[<type> - Message ID: <id> - Chat JID: <jid>]". Pass those two
+    values to get_media to see the attachment.
     """
     messages = whatsapp_list_messages(
         after=after,
@@ -253,6 +262,41 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
             "success": False,
             "message": "Failed to download media"
         }
+
+@mcp.tool()
+def get_media(message_id: str, chat_jid: str):
+    """Get the contents of a media message (an attachment someone sent), so you can read it.
+
+    Images come back as images, PDFs as embedded PDF documents, and text files (txt, csv, json,
+    vcf, ...) as text. Voice notes, audio, video and other files, and anything over the size
+    limit, come back as metadata only (type, file name, size).
+
+    Args:
+        message_id: The ID of the message containing the media
+        chat_jid: The JID of the chat containing the message
+    """
+    result = whatsapp_fetch_media(message_id, chat_jid)
+    meta = {k: v for k, v in result.items() if k in ("ok", "error") and v != ""}
+    meta.update(result.get("meta") or {})
+    if result.get("mime"):
+        meta["mime_type"] = result["mime"]
+    blocks = [TextContent(type="text", text=json.dumps(meta))]
+    data = result.get("data")
+    if not data:
+        return blocks
+    mime = result["mime"]
+    kind = whatsapp_content_kind(mime)
+    name = result["meta"].get("filename") or "file"
+    uri = "whatsapp://media/" + "/".join(quote(p, safe="") for p in (chat_jid, message_id, name))
+    if kind == "image":
+        blocks.append(ImageContent(type="image", data=base64.b64encode(data).decode(), mimeType=mime))
+    elif kind == "text":
+        blocks.append(EmbeddedResource(type="resource", resource=TextResourceContents(
+            uri=uri, mimeType=mime, text=data.decode("utf-8", errors="replace"))))
+    else:  # pdf
+        blocks.append(EmbeddedResource(type="resource", resource=BlobResourceContents(
+            uri=uri, mimeType=mime, blob=base64.b64encode(data).decode())))
+    return blocks
 
 if __name__ == "__main__":
     # Initialize and run the server

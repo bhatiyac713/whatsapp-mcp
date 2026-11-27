@@ -5,6 +5,8 @@ from typing import Optional, List, Tuple
 import os.path
 import requests
 import json
+import contextlib
+import mimetypes
 import audio
 
 # Overridable so the server can run next to a bridge started with a different store/port.
@@ -748,7 +750,6 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
             result = response.json()
             if result.get("success", False):
                 path = result.get("path")
-                print(f"Media downloaded successfully: {path}")
                 return path
             else:
                 print(f"Download failed: {result.get('message', 'Unknown error')}")
@@ -766,3 +767,102 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
         return None
+
+
+# ---------------------------------------------------------------------------------------------
+# Media content (get_media): download through the bridge, return the bytes, delete the file.
+# ---------------------------------------------------------------------------------------------
+
+
+# Largest file get_media will return inline. Bigger ones get metadata only.
+MEDIA_MAX_BYTES = int(os.environ.get("WHATSAPP_MEDIA_MAX_BYTES", str(5 * 1024 * 1024)))
+# Where the bridge writes media (it is the bridge's store directory).
+MEDIA_DIR = os.environ.get("WHATSAPP_STORE_DIR") or os.path.dirname(os.path.abspath(MESSAGES_DB_PATH))
+
+IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+TEXT_TYPES = {"application/json", "application/xml", "text/vcard", "text/x-vcard"}
+
+_MAGIC = [(b"\xff\xd8\xff", "image/jpeg"), (b"\x89PNG\r\n\x1a\n", "image/png"),
+          (b"GIF8", "image/gif"), (b"%PDF-", "application/pdf")]
+
+
+def _sniff(data: bytes, filename: str, media_type: str) -> str:
+    """Best-guess MIME type: magic bytes first, then the file name."""
+    for magic, mime in _MAGIC:
+        if data.startswith(magic):
+            return mime
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    guessed = mimetypes.guess_type(filename or "")[0]
+    if guessed:
+        return guessed
+    return {"audio": "audio/ogg", "video": "video/mp4"}.get(media_type, "application/octet-stream")
+
+
+def content_kind(mime: str) -> str:
+    """How get_media returns a file: 'image', 'pdf', 'text', or 'none' (metadata only)."""
+    if mime in IMAGE_TYPES:
+        return "image"
+    if mime == "application/pdf":
+        return "pdf"
+    if mime.startswith("text/") or mime in TEXT_TYPES:
+        return "text"
+    return "none"
+
+
+def get_media_info(message_id: str, chat_jid: str) -> Optional[dict]:
+    """media_type, filename and size of a message, or None if it has no media."""
+    conn = sqlite3.connect(MESSAGES_DB_PATH)
+    try:
+        row = conn.execute(
+            "SELECT media_type, filename, file_length FROM messages WHERE id = ? AND chat_jid = ?",
+            (message_id, chat_jid),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row or not row[0]:
+        return None
+    return {"media_type": row[0], "filename": row[1] or "", "size": row[2] or 0}
+
+
+def _inside(path: str, directory: str) -> bool:
+    real, base = os.path.realpath(path), os.path.realpath(directory)
+    return os.path.commonpath([real, base]) == base and real != base
+
+
+def fetch_media(message_id: str, chat_jid: str, max_bytes: Optional[int] = None) -> dict:
+    """Download a message's media and read it into memory, then delete the local copy.
+
+    Returns {"ok": bool, "meta": {...}, "mime": str, "data": bytes | None, "error": str}.
+    "data" is None when the file is too big or is a type returned as metadata only.
+    Nothing here logs the file name or the contents.
+    """
+    max_bytes = MEDIA_MAX_BYTES if max_bytes is None else max_bytes
+    info = get_media_info(message_id, chat_jid)
+    if info is None:
+        return {"ok": False, "error": "Message not found or has no media"}
+    meta = dict(info)
+    if info["size"] > max_bytes:  # known from the message, so skip the download
+        return {"ok": True, "meta": meta, "mime": _sniff(b"", info["filename"], info["media_type"]),
+                "data": None, "error": f"File is larger than the {max_bytes}-byte limit"}
+    path = download_media(message_id, chat_jid)
+    if not path:
+        return {"ok": False, "meta": meta, "error": "Download failed"}
+    if not _inside(path, MEDIA_DIR):
+        return {"ok": False, "meta": meta, "error": "Bridge returned a path outside the media directory"}
+    try:
+        size = os.path.getsize(path)
+        meta["size"] = size
+        if size > max_bytes:
+            return {"ok": True, "meta": meta, "mime": _sniff(b"", info["filename"], info["media_type"]),
+                    "data": None, "error": f"File is larger than the {max_bytes}-byte limit"}
+        with open(path, "rb") as f:
+            data = f.read()
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(path)
+    mime = _sniff(data, info["filename"], info["media_type"])
+    if content_kind(mime) == "none":
+        return {"ok": True, "meta": meta, "mime": mime, "data": None,
+                "error": f"{mime} can't be returned as content (metadata only)"}
+    return {"ok": True, "meta": meta, "mime": mime, "data": data, "error": ""}

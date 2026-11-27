@@ -586,7 +586,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	var err error
 
 	// First, check if we already have this file
-	chatDir := fmt.Sprintf("%s/%s", storeDir, strings.ReplaceAll(chatJID, ":", "_"))
+	chatDir := filepath.Join(storeDir, safeName(strings.ReplaceAll(chatJID, ":", "_")))
 	localPath := ""
 
 	// Get media info from the database
@@ -615,7 +615,8 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Generate a local path for the file
-	localPath = fmt.Sprintf("%s/%s", chatDir, filename)
+	// filename (a document's name) comes from the sender: never let it leave chatDir.
+	localPath = filepath.Join(chatDir, safeName(filename))
 
 	// Get absolute path
 	absPath, err := filepath.Abs(localPath)
@@ -677,6 +678,16 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 
 	fmt.Printf("Successfully downloaded %s media to %s (%d bytes)\n", mediaType, absPath, len(mediaData))
 	return true, mediaType, filename, absPath, nil
+}
+
+// safeName reduces a sender-controlled name to one path element, so "../whatsapp.db" or
+// "a/b" can't escape (or overwrite) the store directory.
+func safeName(name string) string {
+	name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+	if name == "." || name == ".." || name == "/" || name == "" {
+		return "file_" + time.Now().Format("20060102_150405")
+	}
+	return name
 }
 
 // Extract direct path from a WhatsApp media URL
