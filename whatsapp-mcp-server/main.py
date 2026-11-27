@@ -1,5 +1,9 @@
 from typing import List, Dict, Any, Optional
-from mcp.server.fastmcp import FastMCP
+import os
+try:
+    from fastmcp import FastMCP  # FastMCP 2.x, needed when served by the gateway
+except ImportError:
+    from mcp.server.fastmcp import FastMCP
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
     list_messages as whatsapp_list_messages,
@@ -12,11 +16,20 @@ from whatsapp import (
     send_message as whatsapp_send_message,
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
-    download_media as whatsapp_download_media
+    download_media as whatsapp_download_media,
+    fetch_media as whatsapp_fetch_media,
 )
+import base64
+from urllib.parse import quote
+import json
+from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent
 
 # Initialize FastMCP server
 mcp = FastMCP("whatsapp")
+
+# Sending is off unless WHATSAPP_WRITE_MODE=true (same convention as simplenote).
+WRITE_MODE = os.environ.get("WHATSAPP_WRITE_MODE", "true" if __name__ == "__main__" else "false").lower() == "true"
+write_tool = mcp.tool() if WRITE_MODE else (lambda fn: fn)
 
 @mcp.tool()
 def search_contacts(query: str) -> List[Dict[str, Any]]:
@@ -54,6 +67,9 @@ def list_messages(
         include_context: Whether to include messages before and after matches (default True)
         context_before: Number of messages to include before each match (default 1)
         context_after: Number of messages to include after each match (default 1)
+
+    Media messages are shown as "[<type> - Message ID: <id> - Chat JID: <jid>]". Pass those two
+    values to get_media to see the attachment.
     """
     messages = whatsapp_list_messages(
         after=after,
@@ -154,7 +170,7 @@ def get_message_context(
     context = whatsapp_get_message_context(message_id, before, after)
     return context
 
-@mcp.tool()
+@write_tool
 def send_message(
     recipient: str,
     message: str
@@ -183,7 +199,7 @@ def send_message(
         "message": status_message
     }
 
-@mcp.tool()
+@write_tool
 def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
     """Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.
     
@@ -203,7 +219,7 @@ def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
         "message": status_message
     }
 
-@mcp.tool()
+@write_tool
 def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
     """Send any audio file as a WhatsApp audio message to the specified recipient. For group messages use the JID. If it errors due to ffmpeg not being installed, use send_file instead.
     
@@ -245,6 +261,39 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
             "success": False,
             "message": "Failed to download media"
         }
+
+@mcp.tool()
+def get_media(message_id: str, chat_jid: str):
+    """Get the file attached to a media message (photo, document, voice note, video, ...).
+
+    Returns a JSON text block with the metadata (media type, file name, size, MIME type), then
+    the file itself: images as image content, everything else as an embedded resource with the
+    original bytes and MIME type. Files over WHATSAPP_MEDIA_MAX_BYTES (default 25 MiB) come back
+    as metadata only.
+
+    Args:
+        message_id: The ID of the message containing the media
+        chat_jid: The JID of the chat containing the message
+    """
+    result = whatsapp_fetch_media(message_id, chat_jid)
+    meta = {k: v for k, v in result.items() if k in ("ok", "error") and v != ""}
+    meta.update(result.get("meta") or {})
+    if result.get("mime"):
+        meta["mime_type"] = result["mime"]
+    blocks = [TextContent(type="text", text=json.dumps(meta))]
+    data = result.get("data")
+    if not data:
+        return blocks
+    mime = result["mime"]
+    name = result["meta"].get("filename") or "file"
+    uri = "whatsapp://media/" + "/".join(quote(p, safe="") for p in (chat_jid, message_id, name))
+    b64 = base64.b64encode(data).decode()
+    if mime.startswith("image/"):
+        blocks.append(ImageContent(type="image", data=b64, mimeType=mime))
+    else:
+        blocks.append(EmbeddedResource(type="resource", resource=BlobResourceContents(
+            uri=uri, mimeType=mime, blob=b64)))
+    return blocks
 
 if __name__ == "__main__":
     # Initialize and run the server
